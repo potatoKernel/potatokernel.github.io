@@ -23,8 +23,8 @@
 <div id="readerResult" class="result" style="display:none">
 <div class="result-top"><div><h3 id="fileTitle">File contents</h3><small id="fileSummary"></small></div><button class="btn" id="copyAll" type="button">Copy all</button></div>
 <div id="linksArea" style="display:none;margin-bottom:14px"><div class="value-label">Detected links</div><div id="linksList" class="history-list"></div></div>
-<div class="value-card"><div class="value-label">Readable content</div><pre id="readableContent" style="white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin:0;max-height:520px;overflow:auto"></pre></div>
-<div id="decodedArea" style="display:none;margin-top:12px" class="value-card"><div class="value-label">Decoded NDEF content</div><div id="decodedContent" style="white-space:pre-wrap;overflow-wrap:anywhere"></div></div>
+<div id="decodedArea" style="display:none;margin-top:12px" class="value-card"><div class="value-label">Detected content</div><div id="decodedContent" style="white-space:pre-wrap;overflow-wrap:anywhere"></div></div>
+
 </div>
 </section>
 <section class="panel" style="margin-top:20px" id="writerPanel">
@@ -32,8 +32,8 @@
 <label class="label" for="creatorType">Content type</label><select class="input" id="creatorType"><option value="url">Website link</option><option value="text">Text message</option></select>
 <label class="label" for="creatorContent" style="margin-top:14px">Link or text</label><input class="input" id="creatorContent" type="text" placeholder="https://example.com" autocomplete="off">
 <div class="error" id="creatorError" role="alert"></div>
-<p class="hint">Downloads a standard .ndef payload, not a complete Flipper Zero .nfc dump. Use a compatible NFC-writing app/device to write it to a tag.</p>
-<button class="btn primary" id="downloadNdef" type="button" style="margin-top:12px">Download .ndef file</button>
+<label class="label" for="creatorFormat" style="margin-top:14px">File format</label><select class="input" id="creatorFormat"><option value="ndef">Standard .ndef file</option><option value="flipper">Flipper Zero .nfc dump (NTAG/Ultralight template)</option></select><p class="hint">The .nfc option creates a generic NTAG/Ultralight dump template with a placeholder UID. It may need the actual tag UID and correct tag type before it can be written successfully.</p>
+<button class="btn primary" id="downloadNdef" type="button" style="margin-top:12px">Download file</button>
 </section>
 <footer class="footer"><span>NFC Desk</span><span>Files are processed locally in your browser.</span></footer>
 </main></div>
@@ -44,17 +44,60 @@ const $=id=>document.getElementById(id);
 function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 let currentText='',currentDecoded='';
-function extractHexBytes(text){const out=[];for(const line of text.split(/\r?\n/)){const m=line.match(/(?:Page|Block)\s+[0-9A-F]+\s*:\s*((?:[0-9A-F]{2}[\s:]*)+)/i);if(m)for(const h of m[1].match(/[0-9A-F]{2}/gi)||[])out.push(parseInt(h,16));}return out}
-function printableFromBytes(bytes){let out='',run='';for(const b of bytes){if(b===9||b===10||b===13||(b>=32&&b<=126)){run+=String.fromCharCode(b)}else{if(run.length>=3)out+=run+'\n';run=''}}if(run.length>=3)out+=run;return out.trim()}
-function decodeNdefRecords(bytes){let start=0,end=bytes.length;for(let i=0;i<bytes.length-1;i++){if(bytes[i]===3){let len=bytes[i+1],off=i+2;if(len===255&&i+3<bytes.length){len=(bytes[i+2]<<8)|bytes[i+3];off=i+4}if(off+len<=bytes.length){start=off;end=off+len;break}}}
-const prefixes=['','http://www.','https://www.','http://','https://','tel:','mailto:','ftp://anonymous:anonymous@','ftp://ftp.','ftps://','sftp://','smb://','nfs://','ftp://','dav://','news:','telnet://','imap:','rtsp://','urn:','pop:','sip:','sips:','tftp://','btspp://','btl2cap://','btgoep://','tcpobex://','irdaobex://','file://','urn:epc:id:','urn:epc:tag:','urn:epc:pat:','urn:epc:raw:','urn:epc:','urn:nfc:'];
-for(let i=start;i<end;){const h=bytes[i++];if(h===0xfe||h===0)continue;if(i+1>=end)break;const tl=bytes[i++],sr=!!(h&16),il=!!(h&8);let pl;if(sr)pl=bytes[i++];else{if(i+4>end)break;pl=(bytes[i]*0x1000000)+(bytes[i+1]<<16)+(bytes[i+2]<<8)+bytes[i+3];i+=4}const ilen=il?bytes[i++]:0;if(i+tl+ilen+pl>end)break;const type=String.fromCharCode(...bytes.slice(i,i+tl));i+=tl+ilen;const payload=bytes.slice(i,i+pl);i+=pl;if(type==='U'&&payload.length){const url=(prefixes[payload[0]]??'')+new TextDecoder().decode(payload.slice(1));return 'Website link: '+url}if(type==='T'&&payload.length){const ll=payload[0]&63;return 'Text message: '+new TextDecoder().decode(payload.slice(1+ll))}}return ''}
-function showFile(file){if(!file)return;$('readerError').classList.remove('show');$('readerResult').style.display='none';const reader=new FileReader();reader.onload=()=>{try{const buffer=reader.result,raw=new Uint8Array(buffer);let text='';if(/\.(nfc|txt)$/i.test(file.name)){const source=new TextDecoder().decode(buffer);const data=extractHexBytes(source);const printable=printableFromBytes(data);text=source.trim();if(printable)text+='\n\n--- Readable text decoded from page/block bytes ---\n'+printable;}else{text=printableFromBytes(Array.from(raw));}
-const urls=[...new Set((text.match(/(?:https?:\/\/|www\.)[^\s<>"']+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')))];const decoded=decodeNdefRecords(Array.from(raw))||decodeNdefRecords(extractHexBytes(text));currentText=text||'(No readable text found in this file.)';currentDecoded=decoded;$('fileTitle').textContent=file.name;$('fileSummary').textContent=`${file.size.toLocaleString()} bytes · ${urls.length} link${urls.length===1?'':'s'} found`;$('readableContent').textContent=currentText;$('linksArea').style.display=urls.length?'block':'none';$('linksList').innerHTML=urls.map(u=>`<article class="history-item"><div style="overflow-wrap:anywhere">${esc(u)}</div><div class="item-actions"><button class="btn" type="button" data-open="${esc(u)}">Open</button><button class="btn" type="button" data-copy="${esc(u)}">Copy</button></div></article>`).join('');$('decodedArea').style.display=decoded?'block':'none';$('decodedContent').textContent=decoded;$('readerResult').style.display='block';}catch(e){$('readerError').textContent='Could not read this file: '+(e.message||'unknown error');$('readerError').classList.add('show')}};reader.onerror=()=>{$('readerError').textContent='Could not open this file.';$('readerError').classList.add('show')};reader.readAsArrayBuffer(file)}
+function extractHexBytes(text){
+ const out=[];
+ for(const line of text.split(/\r?\n/)){
+  const m=line.match(/(?:Page|Block)\s+([0-9A-F]+)\s*:\s*(.*)$/i);
+  if(m){const hex=(m[2].match(/\b[0-9A-F]{2}\b/gi)||[]);for(const h of hex)out.push(parseInt(h,16));}
+ }
+ return out;
+}
+function printableFromBytes(bytes){let out='',run='';for(const b of bytes){if(b===9||b===10||b===13||(b>=32&&b<=126)){run+=String.fromCharCode(b)}else{if(run.length>=2)out+=run+'\n';run=''}}if(run.length>=2)out+=run;return out.trim()}
+function decodeNdefRecords(bytes){
+ const prefixes=['','http://www.','https://www.','http://','https://','tel:','mailto:','ftp://anonymous:anonymous@','ftp://ftp.','ftps://','sftp://','smb://','nfs://','ftp://','dav://','news:','telnet://','imap:','rtsp://','urn:','pop:','sip:','sips:','tftp://','btspp://','btl2cap://','btgoep://','tcpobex://','irdaobex://','file://','urn:epc:id:','urn:epc:tag:','urn:epc:pat:','urn:epc:raw:','urn:epc:','urn:nfc:'];
+ // Search for NDEF TLV (0x03) inside raw bytes or extracted page data.
+ for(let start=0;start<bytes.length;start++){
+  if(bytes[start]!==3)continue;let len=bytes[start+1],off=start+2;
+  if(len===255){if(start+3>=bytes.length)continue;len=(bytes[start+2]<<8)|bytes[start+3];off=start+4;}
+  if(!len||off+len>bytes.length)continue;let i=off,end=off+len;
+  while(i<end){const h=bytes[i++];if(h===0xfe||h===0)continue;if(i+1>=end)break;const tl=bytes[i++],sr=!!(h&16),il=!!(h&8);let pl;if(sr)pl=bytes[i++];else{if(i+4>end)break;pl=(bytes[i]*0x1000000)+(bytes[i+1]<<16)+(bytes[i+2]<<8)+bytes[i+3];i+=4;}const ilen=il?bytes[i++]:0;if(i+tl+ilen+pl>end)break;const type=String.fromCharCode(...bytes.slice(i,i+tl));i+=tl+ilen;const payload=bytes.slice(i,i+pl);i+=pl;
+   if(type==='U'&&payload.length){return 'Website link: '+(prefixes[payload[0]]??'')+new TextDecoder().decode(payload.slice(1));}
+   if(type==='T'&&payload.length){const ll=payload[0]&63;return 'Text: '+new TextDecoder().decode(payload.slice(1+ll));}
+   if(type==='\0'&&payload.length)return 'Content: '+new TextDecoder().decode(payload);
+  }
+ }
+ return '';
+}
+function showFile(file){if(!file)return;$('readerError').classList.remove('show');$('readerResult').style.display='none';const reader=new FileReader();reader.onload=()=>{try{
+ const raw=Array.from(new Uint8Array(reader.result));let source='',pageBytes=[];
+ if(/\.(nfc|txt)$/i.test(file.name)){source=new TextDecoder().decode(reader.result);pageBytes=extractHexBytes(source);}
+ const direct=printableFromBytes(raw),fromPages=printableFromBytes(pageBytes);
+ const allText=[source,direct,fromPages].filter(Boolean).join('\n');
+ const decoded=decodeNdefRecords(raw)||decodeNdefRecords(pageBytes);
+ const links=[...new Set((allText.match(/(?:https?:\/\/|www\.)[^\s<>"']+/gi)||[]).map(u=>u.replace(/[),.;]+$/,'')))];
+ const numbers=[...new Set((allText.match(/\b\d{2,}\b/g)||[]))];
+ const words=[...new Set((fromPages.match(/[A-Za-z][A-Za-z0-9 _-]{1,}/g)||[]).map(x=>x.trim()).filter(x=>x.length>=2))];
+ let answers=[];if(decoded)answers.push(decoded);if(links.length)answers.push('Links:\n'+links.join('\n'));if(words.length)answers.push('Text:\n'+words.join('\n'));if(numbers.length)answers.push('Numbers:\n'+numbers.join('\n'));
+ // Flipper dump metadata can contain useful numbers/words too, but exclude file-format labels and page labels.
+ if(!answers.length){const meta=source.split(/\r?\n/).filter(line=>/^(UID|ATQA|SAK|Mifare|Data format|Device type|Signature|Password|PACK)\s*:/i.test(line)).map(line=>line.trim());if(meta.length)answers.push(meta.join('\n'));}
+ currentText=answers.join('\n\n')||'No readable link, text, or number was found. This dump may contain binary or unsupported tag data.';currentDecoded=decoded;
+ $('fileTitle').textContent=file.name;$('fileSummary').textContent=`${file.size.toLocaleString()} bytes · ${links.length} link${links.length===1?'':'s'} · ${numbers.length} number${numbers.length===1?'':'s'} found`;
+ $('linksArea').style.display=links.length?'block':'none';$('linksList').innerHTML=links.map(u=>`<article class="history-item"><div style="overflow-wrap:anywhere">${esc(u)}</div><div class="item-actions"><button class="btn" type="button" data-open="${esc(/^https?:/i.test(u)?u:'https://'+u)}">Open</button><button class="btn" type="button" data-copy="${esc(u)}">Copy</button></div></article>`).join('');
+ $('decodedArea').style.display=answers.length?'block':'none';$('decodedContent').textContent=currentText;$('readerResult').style.display='block';
+ }catch(e){$('readerError').textContent='Could not read this file: '+(e.message||'unknown error');$('readerError').classList.add('show')}};reader.onerror=()=>{$('readerError').textContent='Could not open this file.';$('readerError').classList.add('show')};reader.readAsArrayBuffer(file)}
 $('nfcFile').addEventListener('change',e=>showFile(e.target.files[0]));$('dropZone').addEventListener('dragover',e=>{e.preventDefault();$('dropZone').classList.add('drag')});$('dropZone').addEventListener('dragleave',()=>$('dropZone').classList.remove('drag'));$('dropZone').addEventListener('drop',e=>{e.preventDefault();$('dropZone').classList.remove('drag');showFile(e.dataTransfer.files[0])});
 $('linksList').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.open)window.open(b.dataset.open,'_blank','noopener,noreferrer');if(b.dataset.copy)copy(b.dataset.copy)});
-async function copy(v){try{await navigator.clipboard.writeText(v);toast('Copied')}catch(_){toast('Copy unavailable; select the text and copy it')}}$('copyAll').addEventListener('click',()=>copy(currentText+(currentDecoded?'\n\n'+currentDecoded:'')));
+async function copy(v){try{await navigator.clipboard.writeText(v);toast('Copied')}catch(_){toast('Copy unavailable; select the text and copy it')}}$('copyAll').addEventListener('click',()=>copy(currentText));
 function makeRecord(kind,value){let type,payload;if(kind==='url'){const prefixes=['https://www.','http://www.','https://','http://'];let code=0,rest=value;for(let i=0;i<prefixes.length;i++){if(value.toLowerCase().startsWith(prefixes[i])){code=[2,1,4,3][i];rest=value.slice(prefixes[i].length);break}}type=[0x55];payload=[code,...new TextEncoder().encode(rest)]}else{type=[0x54];payload=[2,0x65,0x6e,...new TextEncoder().encode(value)]}if(payload.length>255)throw Error('Text/link is too long (maximum 255 bytes for this simple writer).');return new Uint8Array([0xd1,type.length,payload.length,...type,...payload])}
-$('creatorType').addEventListener('change',()=>{$('creatorContent').placeholder=$('creatorType').value==='url'?'https://example.com':'Type your message here';$('creatorError').classList.remove('show')});$('downloadNdef').addEventListener('click',()=>{try{const kind=$('creatorType').value,value=$('creatorContent').value.trim();if(!value)throw Error('Enter a URL or text message first.');if(kind==='url'){const u=new URL(value);if(!['http:','https:'].includes(u.protocol))throw Error('Use a valid http:// or https:// URL.')}const record=makeRecord(kind,value),bytes=new Uint8Array([3,record.length,...record,254]),blob=new Blob([bytes],{type:'application/octet-stream'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=kind==='url'?'nfc-link.ndef':'nfc-text.ndef';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);toast('NDEF file downloaded')}catch(e){$('creatorError').textContent=e.message||'Could not create file.';$('creatorError').classList.add('show')}});
+$('creatorType').addEventListener('change',()=>{$('creatorContent').placeholder=$('creatorType').value==='url'?'https://example.com':'Type your message here';$('creatorError').classList.remove('show')});
+function makeFlipperDump(kind,value){
+ const rec=makeRecord(kind,value),tlv=[3,rec.length,...rec,254];if(tlv.length>144)throw Error('This message is too long for this basic NTAG/Ultralight template. Try a shorter message.');
+ const uid=[0x04,0x11,0x22,0x33,0x44,0x55,0x66];const bcc0=0x88^uid[0]^uid[1]^uid[2],bcc1=uid[3]^uid[4]^uid[5]^uid[6];
+ const pages=[[uid[0],uid[1],uid[2],bcc0],[uid[3],uid[4],uid[5],uid[6]],[bcc1,0x48,0x00,0x00],[0xE1,0x10,0x12,0x00]];
+ for(let i=0;i<tlv.length;i+=4)pages.push([...tlv.slice(i,i+4),...Array(Math.max(0,4-tlv.slice(i,i+4).length)).fill(0)]);
+ while(pages.length<45)pages.push([0,0,0,0]);
+ return 'Filetype: Flipper NFC device\nVersion: 4\n# NFC device type\nDevice type: NTAG/Ultralight\nUID: '+uid.map(x=>x.toString(16).padStart(2,'0')).join(' ').toUpperCase()+'\nATQA: 00 44\nSAK: 00\n\n# Pages 0-2 contain UID and tag configuration; page 4 onward contains NDEF data\n'+pages.map((pg,i)=>`Page ${i.toString(16).padStart(2,'0').toUpperCase()}: ${pg.map(x=>x.toString(16).padStart(2,'0')).join(' ').toUpperCase()}`).join('\n')+'\n';
+}
+$('downloadNdef').addEventListener('click',()=>{try{const kind=$('creatorType').value,value=$('creatorContent').value.trim(),format=$('creatorFormat').value;if(!value)throw Error('Enter a URL or text message first.');if(kind==='url'){const u=new URL(value);if(!['http:','https:'].includes(u.protocol))throw Error('Use a valid http:// or https:// URL.')}let blob,filename;if(format==='flipper'){blob=new Blob([makeFlipperDump(kind,value)],{type:'text/plain;charset=utf-8'});filename=kind==='url'?'nfc-link.nfc':'nfc-text.nfc';}else{const record=makeRecord(kind,value),bytes=new Uint8Array([3,record.length,...record,254]);blob=new Blob([bytes],{type:'application/octet-stream'});filename=kind==='url'?'nfc-link.ndef':'nfc-text.ndef';}const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);toast(filename+' downloaded')}catch(e){$('creatorError').textContent=e.message||'Could not create file.';$('creatorError').classList.add('show')}});
 })();
 </script></body></html>
