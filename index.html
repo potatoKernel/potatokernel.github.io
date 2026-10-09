@@ -24,6 +24,23 @@
 </section>
 <section class="panel history-panel"><div class="panel-head"><div><h3>Card history</h3><p id="historyCount">0 saved cards</p></div><button class="btn subtle" id="clearSearchBtn" type="button" title="Clear search">Clear</button></div><div class="search"><span class="search-icon">⌕</span><input class="input" id="searchInput" type="search" placeholder="Search names or UIDs…" aria-label="Search card history"></div><div class="history-list" id="historyList"></div></section>
 </main>
+
+<section class="panel" style="margin-top:20px" id="ndefPanel">
+<div class="panel-head"><div><h3>NFC link & text reader</h3><p>Read NDEF website links or text from supported NFC dump files.</p></div><span class="pill">NDEF</span></div>
+<label class="label" for="ndefFile">Choose an NFC dump or binary file</label><input class="input" id="ndefFile" type="file" accept=".nfc,.bin,.dump,.txt,application/octet-stream,text/plain">
+<p class="hint">Supports common NDEF URI/text records, including many Type 2 tag dumps. Raw dumps vary by tag type, so not every .nfc file will contain readable NDEF data.</p>
+<div id="ndefResult" class="result" style="display:none"><div class="result-grid"><div class="value-card wide"><div class="value-label" id="ndefType">Record</div><div class="value" id="ndefValue" style="white-space:pre-wrap"></div></div></div><div style="margin-top:10px"><button class="btn" id="openNdefLink" type="button" style="display:none">Open link</button> <button class="btn" id="copyNdef" type="button">Copy content</button></div></div>
+<div id="ndefError" class="error" role="alert"></div>
+</section>
+<section class="panel" style="margin-top:20px" id="ndefCreatorPanel">
+<div class="panel-head"><div><h3>NDEF file creator</h3><p>Create a standard NDEF payload for a compatible tag-writing app.</p></div><span class="pill">Export</span></div>
+<label class="label" for="creatorType">Content type</label><select class="input" id="creatorType"><option value="url">Website URL</option><option value="text">Plain text</option></select>
+<div style="margin-top:12px"><label class="label" for="creatorContent">URL or message</label><textarea class="input" id="creatorContent" rows="3" placeholder="https://example.com"></textarea></div>
+<p class="hint">Downloads a standard .ndef file, not a complete Flipper Zero .nfc dump. Use a compatible NFC writer to write it to a physical tag.</p>
+<button class="btn primary" id="downloadNdef" type="button" style="margin-top:12px">Download .ndef file</button>
+<div id="creatorError" class="error" role="alert"></div>
+</section>
+
 <footer class="footer"><span>Runs in your browser · No account required</span><span>History is stored on this device and browser.</span></footer>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -61,6 +78,27 @@ $("historyList").addEventListener("click",e=>{const b=e.target.closest("button[d
 $("cancelRenameBtn").addEventListener("click",closeRename);$("confirmRenameBtn").addEventListener("click",confirmRename);$("renameInput").addEventListener("keydown",e=>{if(e.key==="Enter")confirmRename();if(e.key==="Escape")closeRename()});$("renameModal").addEventListener("click",e=>{if(e.target===$("renameModal"))closeRename()});
 $("exportBtn").addEventListener("click",()=>{if(!history.length){showToast("No saved cards to export yet");return}const blob=new Blob([JSON.stringify(history,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="nfc-card-history.json";document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);showToast("History exported")});
 renderHistory();
+
+// NDEF reader and standard NDEF payload creator
+let lastNdefContent="",lastNdefUrl="";
+function decodeNdefRecords(bytes){
+  // Locate a Type 2 Tag TLV (03 length ... FE) if present.
+  let start=0,end=bytes.length;
+  for(let i=0;i<bytes.length-1;i++){if(bytes[i]===0x03){let len=bytes[i+1],off=i+2;if(len===0xff&&i+3<bytes.length){len=(bytes[i+2]<<8)|bytes[i+3];off=i+4}if(off+len<=bytes.length){start=off;end=off+len;break}}}
+  const prefix=["","http://www.","https://www.","http://","https://","tel:","mailto:","ftp://anonymous:anonymous@","ftp://ftp.","ftps://","sftp://","smb://","nfs://","ftp://","dav://","news:","telnet://","imap:","rtsp://","urn:","pop:","sip:","sips:","tftp:","btspp://","btl2cap://","btgoep://","tcpobex://","irdaobex://","file://","urn:epc:id:","urn:epc:tag:","urn:epc:pat:","urn:epc:raw:","urn:epc:","urn:nfc:"];
+  for(let i=start;i<end;){const header=bytes[i++];if(header===0xfe||header===0)continue;if(i+1>=end)break;const typeLen=bytes[i++],sr=!!(header&0x10),il=!!(header&0x08);let payloadLen;if(sr){payloadLen=bytes[i++]}else{if(i+4>end)break;payloadLen=((bytes[i]*0x1000000)+(bytes[i+1]<<16)+(bytes[i+2]<<8)+bytes[i+3])>>>0;i+=4}let idLen=il?bytes[i++]:0;if(i+typeLen+idLen+payloadLen>end)break;const type=String.fromCharCode(...bytes.slice(i,i+typeLen));i+=typeLen+idLen;const payload=bytes.slice(i,i+payloadLen);i+=payloadLen;
+    if(type==='U'&&payload.length){const u=prefix[payload[0]]??'';const url=u+new TextDecoder().decode(payload.slice(1));return{type:'Website link',value:url,url:/^https?:\/\//i.test(url)?url:''}}
+    if(type==='T'&&payload.length){const langLen=payload[0]&0x3f;const val=new TextDecoder().decode(payload.slice(1+langLen));return{type:'Text message',value:val,url:''}}
+  }return null;
+}
+function extractHexBytes(text){const out=[];for(const line of text.split(/\r?\n/)){const m=line.match(/(?:Page|Block)\s+[0-9A-F]+\s*:\s*((?:[0-9A-F]{2}[\s:]*)+)/i);if(m){for(const h of m[1].match(/[0-9A-F]{2}/gi)||[])out.push(parseInt(h,16));}}return out}
+$('ndefFile').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;$('ndefError').classList.remove('show');$('ndefResult').style.display='none';try{const buf=await f.arrayBuffer();let bytes=Array.from(new Uint8Array(buf));if(/\.(nfc|txt)$/i.test(f.name)){const txt=new TextDecoder().decode(buf);const dump=extractHexBytes(txt);if(dump.length)bytes=dump;else bytes=Array.from(new TextEncoder().encode(txt))}const found=decodeNdefRecords(bytes);if(!found)throw Error('No supported NDEF URL or text record was found. The dump may be a UID-only/non-NDEF dump or use a tag format this reader does not decode.');lastNdefContent=found.value;lastNdefUrl=found.url;$('ndefType').textContent=found.type;$('ndefValue').textContent=found.value;$('openNdefLink').style.display=found.url?'inline-block':'none';$('ndefResult').style.display='block'}catch(err){$('ndefError').textContent=err.message||'Could not read this file.';$('ndefError').classList.add('show')}});
+$('openNdefLink').addEventListener('click',()=>{if(lastNdefUrl)window.open(lastNdefUrl,'_blank','noopener,noreferrer')});
+$('copyNdef').addEventListener('click',()=>copyText(lastNdefContent));
+function makeNdefRecord(kind,value){let type,payload;if(kind==='url'){let prefixes=['https://www.','http://www.','https://','http://'];let code=0,rest=value;for(let i=0;i<prefixes.length;i++){if(value.toLowerCase().startsWith(prefixes[i])){code=[2,1,4,3][i];rest=value.slice(prefixes[i].length);break}}type=[0x55];payload=[code,...new TextEncoder().encode(rest)]}else{type=[0x54];const data=new TextEncoder().encode(value);payload=[2,0x65,0x6e,...data]}if(payload.length>255)throw Error('This creator currently supports payloads up to 255 bytes.');return new Uint8Array([0xd1,type.length,payload.length,...type,...payload])}
+$('creatorType').addEventListener('change',()=>{$('creatorContent').placeholder=$('creatorType').value==='url'?'https://example.com':'Type your message here';$('creatorError').classList.remove('show')});
+$('downloadNdef').addEventListener('click',()=>{try{const kind=$('creatorType').value,value=$('creatorContent').value.trim();if(!value)throw Error('Enter a URL or text message first.');if(kind==='url'){const u=new URL(value);if(!['http:','https:'].includes(u.protocol))throw Error('Use a valid http:// or https:// URL.')}const rec=makeNdefRecord(kind,value);const bytes=new Uint8Array([0x03,rec.length,...rec,0xfe]);const blob=new Blob([bytes],{type:'application/octet-stream'}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=kind==='url'?'nfc-link.ndef':'nfc-text.ndef';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(u);showToast('NDEF file downloaded')}catch(err){$('creatorError').textContent=err.message||'Could not create NDEF file.';$('creatorError').classList.add('show')}});
+
 })();
 </script>
 </body>
